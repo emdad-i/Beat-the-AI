@@ -36,7 +36,7 @@ jobs:
             # Run the container with host networking or port mapping
             podman run -d \
               --name beat-the-ai \
-              -p 5000:5000 \
+              -p 5001:5001 \
               --restart always \
               -e OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
               beat-the-ai
