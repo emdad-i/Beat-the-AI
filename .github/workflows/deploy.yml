@@ -11,37 +11,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # STEP 1: Upload code to the server's home directory
+      # STEP 1: Upload code using variables for host/user/port
       - name: Copy files via SSH
         uses: appleboy/scp-action@v0.1.4
         with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
+          host: ${{ vars.SERVER_IP }}
+          username: ${{ vars.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
+          port: ${{ vars.SSH_PORT }}
           source: "."
-          target: "/home/${{ secrets.SERVER_USER }}/beat-the-ai"
+          target: "/home/${{ vars.SERVER_USER }}/beat-the-ai"
 
       # STEP 2: Build and Run using Podman
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
+          host: ${{ vars.SERVER_IP }}
+          username: ${{ vars.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
+          port: ${{ vars.vars.SSH_PORT }}
           script: |
-            # Move to the uploaded directory
-            cd /home/${{ secrets.SERVER_USER }}/beat-the-ai
+            # Navigate to the uploaded directory
+            cd /home/${{ vars.SERVER_USER }}/beat-the-ai
             
             # Stop and cleanup existing container
             podman stop beat-the-ai || true
             podman rm beat-the-ai || true
 
-            # Build the image from the CURRENT directory (.)
+            # Build the image from the CURRENT directory
             podman build -t beat-the-ai .
 
             # Run the container
+            # Using port 5001 to avoid AirPlay conflicts
             podman run -d \
               --name beat-the-ai \
               -p 5001:5001 \
