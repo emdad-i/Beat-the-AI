@@ -1,0 +1,42 @@
+name: Deploy to Linux Server
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }} # <--- Custom Port added here
+          script: |
+            # Navigate to app directory
+            mkdir -p /opt/beat-the-ai
+            cd /opt/beat-the-ai
+            
+            # Write the current code to the server (simplest for small apps)
+            # Alternatively, use git pull if the server has access
+            
+            # Stop and remove existing container
+            podman stop beat-the-ai || true
+            podman rm beat-the-ai || true
+
+            # Build the new image
+            podman build -t beat-the-ai .
+
+            # Run the container with host networking or port mapping
+            podman run -d \
+              --name beat-the-ai \
+              -p 5000:5000 \
+              --restart always \
+              -e OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
+              beat-the-ai

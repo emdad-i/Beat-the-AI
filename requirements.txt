@@ -3,3 +3,4 @@ flask-socketio
 openai
 eventlet
 python-dotenv
+gunicorn
