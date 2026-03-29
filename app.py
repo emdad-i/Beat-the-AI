@@ -1,14 +1,20 @@
 import os
 import base64
 import json
+import eventlet
 from flask import Flask, render_template_string
 from flask_socketio import SocketIO, emit
 from openai import OpenAI
 
-# --- INITIALIZATION ---
+# Monkey patch for eventlet production server
+eventlet.monkey_patch()
+
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
-client = OpenAI() 
+# Production settings for SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# Pull API Key from Environment Variable
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_initial_state():
     return {
@@ -47,18 +53,22 @@ def speak(text):
         socketio.emit('play_audio', {'audio': b64_audio})
     except Exception as e: print(f"Audio Error: {e}")
 
-# --- UI STYLES ---
+# --- RECONNECTION LOGIC ADDED TO JS ---
+RECONNECT_JS = """
+socket.on('disconnect', () => {
+    console.log("Lost connection to fsociety server...");
+    setTimeout(() => { location.reload(); }, 3000); 
+});
+"""
+
 CSS = """
 <style>
     body { background:#000; color:#ff0000; font-family:'Courier Prime', monospace; text-align:center; padding:20px; text-transform:uppercase; transition: background 0.5s; overflow-x: hidden; }
     .card { border: 1px solid #ff0000; padding:20px; margin:10px; background:rgba(5,5,5,0.9); position: relative; }
     button { background:#000; color:#ff0000; border:1px solid #ff0000; padding:12px; cursor:pointer; width:100%; font-family:inherit; margin-top:10px; }
     button:hover { background:#ff0000; color:#000; }
-    
-    /* Stealth Reset Button */
     #reset-btn { position: fixed; top: 10px; right: 10px; width: auto; padding: 5px 10px; font-size: 10px; border-color: transparent; color: transparent; z-index: 999; background: transparent; }
     #reset-btn:hover { border-color: #f00; color: #f00; background: #222; }
-    
     textarea { width:100%; background:#111; color:#fff; border:1px solid #ff0000; padding:10px; height:100px; font-family:inherit; }
     .score { font-size: 70px; color:#fff; }
     .timer { font-size: 50px; color: #fff; border: 2px solid #ff0000; padding: 10px 20px; }
@@ -78,6 +88,7 @@ TV_HTML = f"""
         const socket = io();
         const questions = {qs_json_string};
         let timerInt;
+        {RECONNECT_JS}
 
         socket.on('state_update', (s) => {{
             let ui = document.getElementById('display');
@@ -135,9 +146,11 @@ PORTAL_HTML = f"""
     <script>
         const socket = io(); let myT = null; let curQ = -1;
         const questions = {qs_json_string};
+        {RECONNECT_JS}
+        
         function pick(t) {{ myT = t; document.getElementById('setup').style.display='none'; document.getElementById('main').style.display='block'; socket.emit('connect'); }}
         socket.on('state_update', (s) => {{
-            if(s.phase == 'INTRO') {{ location.reload(); }} // Force reload on reset
+            if(s.phase == 'INTRO') {{ location.reload(); }} 
             if(!myT) return; 
             let v = document.getElementById('view');
             if(s.phase == 'REGISTRATION') {{
@@ -145,7 +158,7 @@ PORTAL_HTML = f"""
             }} else if(s.phase == 'PLAY') {{
                 if(curQ != s.q_index) {{ 
                     curQ = s.q_index; 
-                    v.innerHTML = `<h3>ROUND ${{s.q_index+1}}</h3><div class='card' style='color:#fff; font-size:14px;'>Q: ${{questions[s.q_index].q}}</div><textarea id="ans" placeholder="Discuss with team then type here..."></textarea><button onclick="send()">UPLOAD</button>`; 
+                    v.innerHTML = `<h3>ROUND ${{s.q_index+1}}</h3><div class='card' style='color:#fff; font-size:14px;'>Q: ${{questions[s.q_index].q}}</div><textarea id="ans" placeholder="Discuss then type..."></textarea><button onclick="send()">UPLOAD</button>`; 
                 }}
                 if(s.team_answers[myT]) v.innerHTML = `<h3>PACKET SENT.</h3>`;
             }}
@@ -158,8 +171,12 @@ PORTAL_HTML = f"""
 
 @app.route('/tv')
 def tv_page(): return TV_HTML
+
 @app.route('/')
 def portal_page(): return PORTAL_HTML
+
+@app.route('/health')
+def health(): return "SYSTEM_ONLINE", 200
 
 @socketio.on('connect')
 def connect(): emit('state_update', state)
@@ -168,29 +185,22 @@ def connect(): emit('state_update', state)
 def handle_host(data):
     global state
     action = data.get('action')
-    
-    if action == 'hard_reset':
-        state = get_initial_state()
+    if action == 'hard_reset': state = get_initial_state()
     elif action == 'boot':
         state['phase'] = 'REGISTRATION'
-        speak("Hello, friend. Register your nodes... five predictions, five ethics. Discuss with your team. You have 60 seconds.")
+        speak("Hello, friend. Register your nodes. Five predictions, five ethics. Discuss with your team. You have 60 seconds.")
     elif action == 'start': state['phase'] = 'PLAY'
     elif action == 'broadcast_q': 
         state['winner_this_round'] = ""
         speak(questions[state['q_index']]['script'])
     elif action == 'get_verdict':
-        # --- ENHANCED AI JUDGING LOGIC ---
-        prompt = (f"Act as Mr. Robot. Analyze this debate. Question: {questions[state['q_index']]['q']}. "
-                  f"Node {state['teams']['A']} argued: {state['team_answers']['A']}. "
-                  f"Node {state['teams']['B']} argued: {state['team_answers']['B']}. "
-                  f"1. Compare the logic of both teams. 2. Explain which team's reasoning was more sound or creative. "
-                  f"3. Declare the winner. You must end the speech with 'Point goes to {state['teams']['A']}' or 'Point goes to {state['teams']['B']}'. "
-                  f"Keep the total word count under 80 words.")
-        
+        prompt = (f"Act as Mr. Robot. Analyze this. Q: {questions[state['q_index']]['q']}. "
+                  f"{state['teams']['A']} argued: {state['team_answers']['A']}. "
+                  f"{state['teams']['B']} argued: {state['team_answers']['B']}. "
+                  f"1. Compare logic. 2. Explain reasoning. 3. End ONLY with 'Point goes to {state['teams']['A']}' or 'Point goes to {state['teams']['B']}'.")
         res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}]).choices[0].message.content
         state['current_verdict'] = res
         speak(res)
-        
         if state['teams']['A'] in res: 
             state['scores']['A'] += 1
             state['winner_this_round'] = 'A'
@@ -198,7 +208,6 @@ def handle_host(data):
             state['scores']['B'] += 1
             state['winner_this_round'] = 'B'
         state['history'].append({"q": questions[state['q_index']]['q'], "a": state['team_answers']['A'], "b": state['team_answers']['B'], "winner": state['winner_this_round']})
-        
     elif action == 'next':
         if state['q_index'] < 9:
             state['q_index'] += 1
@@ -206,11 +215,10 @@ def handle_host(data):
         else: state['phase'] = 'FINALE'
     elif action == 'finale':
         win_name = state['teams']['A'] if state['scores']['A'] > state['scores']['B'] else state['teams']['B']
-        summary_prompt = f"Act as Mr. Robot. Summarize the logic used in this game history: {state['history']}. Declare {win_name} victor. End with a cold quote about society."
+        summary_prompt = f"Act as Mr. Robot. Summarize this game history: {state['history']}. Declare {win_name} victor."
         summary = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": summary_prompt}]).choices[0].message.content
         state['current_verdict'] = summary
         speak(summary)
-
     emit('state_update', state, broadcast=True)
 
 @socketio.on('player_action')
