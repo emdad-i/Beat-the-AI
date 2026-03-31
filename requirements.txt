@@ -1,6 +1,6 @@
 flask
 flask-socketio
 openai
-eventlet
-python-dotenv
+gevent
+gevent-websocket
 gunicorn
