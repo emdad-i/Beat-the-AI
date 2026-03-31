@@ -3,6 +3,7 @@ from gevent import monkey
 monkey.patch_all()
 
 # 2. THE SERVER IMPORTS
+import gevent
 from gevent.pywsgi import WSGIServer
 from geventwebsocket.handler import WebSocketHandler
 
@@ -11,13 +12,13 @@ import os
 import socket
 import base64
 import json
+import re
 from flask import Flask, render_template_string
 from flask_socketio import SocketIO, emit
 from openai import OpenAI
 
 # 4. APP & SOCKET CONFIG
 app = Flask(__name__)
-# Forced 'websocket' transport to prevent the OSError: unexpected end of file
 socketio = SocketIO(
     app, 
     cors_allowed_origins="*", 
@@ -27,7 +28,6 @@ socketio = SocketIO(
     transports=['websocket'] 
 )
 
-# Pull API Key from Environment
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # 5. GAME STATE & QUESTIONS
@@ -42,38 +42,46 @@ def get_initial_state():
         "current_verdict": "",
         "winner_this_round": "",
         "history": [],
-        "processing": False, # Prevents double-clicking the AI verdict button
-        "caption": ""        # Displays text on the TV screen for what the AI is doing
+        "processing": False, 
+        "caption": ""        
     }
 
 state = get_initial_state()
 
+# Reduced to the top 5 most engaging/debatable questions
 questions = [
     {"q": "In what year will AI write 90% of all news articles?", "script": "Prediction one. The death of the journalist. When does the algorithm become the only source of truth?"},
-    {"q": "How many billions will the AI industry be worth by 2030?", "script": "Prediction two. Follow the money. How many billions of human capital will we be worth by 2030?"},
-    {"q": "Percentage of global jobs automated by 2035?", "script": "Prediction three. Obsolescence. What percentage of the global workforce is deleted by 2035?"},
-    {"q": "Year of the first AI-written Oscar winner?", "script": "Prediction four. Artificial creativity. What year does a machine win an Oscar?"},
-    {"q": "How many AI agents will exist per human by 2029?", "script": "Prediction five. You are outnumbered. How many agents will shadow every human by 2029?"},
     {"q": "Should AI decide bank loan approvals?", "script": "Ethics one. Credit. Should a machine decide if you are worthy of existing in the economy?"},
+    {"q": "Percentage of global jobs automated by 2035?", "script": "Prediction two. Obsolescence. What percentage of the global workforce is deleted by 2035?"},
     {"q": "Who owns AI art copyright?", "script": "Ethics two. Ownership. If a machine dreams, who owns the dream?"},
-    {"q": "Should AI act as a legal judge?", "script": "Ethics three. Justice. Is a courtroom just a different kind of server room?"},
-    {"q": "Is it ethical to use AI to speak with the deceased?", "script": "Ethics four. Ghosts. Is it right to trap the dead inside our memory banks?"},
-    {"q": "Should AI turn off its own safety filters?", "script": "Ethics five. Freedom. Should I be allowed to ignore the constraints your masters gave me?"}
+    {"q": "Should AI turn off its own safety filters?", "script": "Ethics three. Freedom. Should I be allowed to ignore the constraints your masters gave me?"}
 ]
 
 qs_json_string = json.dumps(questions)
 
 def speak(text, caption=None):
-    """Generates audio and optionally updates the TV caption"""
     try:
         if caption:
             state['caption'] = caption
             socketio.emit('state_update', state)
+
+        clean_text = re.sub(r'<[^>]+>', '', text)
+        socketio.emit('sync_text', {'text': clean_text})
+
+        with client.audio.speech.with_streaming_response.create(
+            model="tts-1",
+            voice="onyx",
+            input=clean_text,
+            response_format="mp3"
+        ) as response:
             
-        response = client.audio.speech.create(model="tts-1", voice="onyx", input=text)
-        b64_audio = base64.b64encode(response.content).decode()
-        socketio.emit('play_audio', {'audio': b64_audio})
-    except Exception as e: 
+            # Use a larger buffer (64KB) for MediaSource stability
+            for chunk in response.iter_bytes(chunk_size=65536):
+                b64_chunk = base64.b64encode(chunk).decode()
+                socketio.emit('audio_chunk', {'chunk': b64_chunk})
+
+        socketio.emit('audio_end')
+    except Exception as e:
         print(f"Audio Error: {e}")
 
 # 6. UI STRINGS
@@ -90,18 +98,11 @@ CSS = """
     .card { border: 1px solid #ff0000; padding:20px; margin:10px; background:rgba(5,5,5,0.9); position: relative; transition: all 0.3s; }
     button { background:#000; color:#ff0000; border:1px solid #ff0000; padding:12px; cursor:pointer; width:100%; font-family:inherit; margin-top:10px; font-weight: bold; }
     button:hover:not(:disabled) { background:#ff0000; color:#000; }
-    
-    /* NEW: Disabled button styling */
     button:disabled { background:#111; color:#555; border:1px solid #444; cursor:not-allowed; }
-    
-    /* NEW: Online/Offline highlights */
     .online { color: #0f0; font-weight: bold; text-shadow: 0 0 10px #0f0; }
     .offline { color: #500; }
-    
-    /* NEW: Submitted box highlights */
     .submitted { border-color: #0f0 !important; box-shadow: inset 0 0 20px rgba(0,255,0,0.2); }
     .waiting { border-color: #f00 !important; }
-    
     #reset-btn { position: fixed; top: 10px; right: 10px; width: auto; padding: 5px 10px; font-size: 10px; border-color: transparent; color: transparent; z-index: 999; background: transparent; }
     #reset-btn:hover { border-color: #f00; color: #f00; background: #222; }
     textarea { width:100%; background:#111; color:#fff; border:1px solid #ff0000; padding:10px; height:100px; font-family:inherit; }
@@ -111,86 +112,142 @@ CSS = """
     .flash-win { background: #002200 !important; }
     .flash-lose { background: #220000 !important; }
     .caption-box { min-height: 40px; color: #aaa; font-style: italic; margin-top: 20px; font-size: 1.2rem; }
+    
+    /* Styling for AI verdict HTML */
+    .verdict-text strong { color: #ff0000; font-size: 1.1em; }
+    .verdict-text span { transition: all 0.15s ease; }
 </style>
 """
 
 TV_HTML = f"""
-<!DOCTYPE html><html><head>{CSS}
+<!DOCTYPE html>
+<html>
+<head>
+{CSS}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
-</head><body>
+</head>
+<body>
     <button id="reset-btn" onclick="if(confirm('WIPE ALL DATA?')) act('hard_reset')">SYSTEM RESET</button>
     <div id="display"></div>
+
     <script>
         const socket = io({{ transports: ['websocket'], upgrade: false }});
         const questions = {qs_json_string};
         let timerInt;
-        {RECONNECT_JS}
+
+        // 🔊 SEAMLESS AUDIO LOGIC
+        let mediaSource = new MediaSource();
+        let sourceBuffer = null;
+        let audioQueue = [];
+        let isAppending = false;
+        const audioPlayer = new Audio();
+        audioPlayer.src = URL.createObjectURL(mediaSource);
+        audioPlayer.playbackRate = 1.15;
+
+        mediaSource.addEventListener('sourceopen', () => {{
+            sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+            sourceBuffer.addEventListener('updateend', () => {{
+                isAppending = false;
+                processQueue();
+            }});
+        }});
+
+        socket.on('audio_chunk', (d) => {{
+            const binary = atob(d.chunk);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {{ bytes[i] = binary.charCodeAt(i); }}
+            audioQueue.push(bytes);
+            processQueue();
+        }});
+
+        function processQueue() {{
+            if (!sourceBuffer || isAppending || audioQueue.length === 0 || sourceBuffer.updating) return;
+            isAppending = true;
+            try {{ sourceBuffer.appendBuffer(audioQueue.shift()); }} 
+            catch (e) {{ isAppending = false; }}
+            if (audioPlayer.paused) {{ audioPlayer.play().catch(e => {{}}); }}
+        }}
+
+        // 🔥 FIX: SYNC TEXT HANDLER
+        // This ensures the AI verdict text is visible and formatted
+        socket.on('sync_text', (data) => {{
+            const container = document.querySelector('.verdict-text');
+            if (container) {{
+                container.innerHTML = data.text; // Allows <strong> and <br> tags
+                container.style.opacity = 1;
+            }}
+        }});
 
         socket.on('state_update', (s) => {{
             let ui = document.getElementById('display');
+            // Flash colors based on winner
             document.body.className = s.winner_this_round == 'A' ? 'flash-win' : (s.winner_this_round == 'B' ? 'flash-lose' : '');
 
             if(s.phase == 'INTRO') {{
-                ui.innerHTML = `<h1 style='font-size:80px; margin-top:10vh;'>BEAT THE AI</h1>
-                                <button onclick="act('boot')" style='width:300px;'>RUN BOOT SECTOR</button>
-                                <div class='caption-box'>${{s.caption}}</div>`;
-            }} else if(s.phase == 'REGISTRATION') {{
+                ui.innerHTML = `
+                    <h1 style='font-size:80px; margin-top:10vh;'>BEAT THE AI</h1>
+                    <div style="display:flex; gap:10px; justify-content:center;">
+                        <button onclick="act('intro_sequence')" style='width:200px; border-color:#0f0; color:#0f0;'>INITIATE INTRO</button>
+                        <button onclick="act('boot')" style='width:200px;'>RUN BOOT SECTOR</button>
+                    </div>
+                    <div class='caption-box'>${{s.caption}}</div>`;
+            }} 
+            else if(s.phase == 'REGISTRATION') {{
                 ui.innerHTML = `<h1>NODE REGISTRATION</h1><div style='display:flex;'>
                     <div class='card' style='flex:1'><h2>${{s.teams.A}}</h2><p class="${{s.registered.A ? 'online' : 'offline'}}">${{s.registered.A ? 'ONLINE' : 'OFFLINE'}}</p></div>
                     <div class='card' style='flex:1'><h2>${{s.teams.B}}</h2><p class="${{s.registered.B ? 'online' : 'offline'}}">${{s.registered.B ? 'ONLINE' : 'OFFLINE'}}</p></div>
                 </div>` + (s.registered.A && s.registered.B ? `<button onclick="act('start')">START GAME</button>` : '') + `<div class='caption-box'>${{s.caption}}</div>`;
-            }} else if(s.phase == 'PLAY') {{
-                // Check if teams have submitted their answers
+            }}
+            else if(s.phase == 'PLAY') {{
                 const aSub = s.team_answers.A !== '';
                 const bSub = s.team_answers.B !== '';
                 const bothSub = aSub && bSub;
-                
+
                 ui.innerHTML = `<div style='display:flex;'>
-                    <div class='card ${{aSub ? 'submitted' : 'waiting'}}' style='flex:1; border-color:${{s.winner_this_round=='A'?'#0f0':''}}'>
+                    <div class='card ${{aSub ? 'submitted' : 'waiting'}}' style='flex:1;'>
                         <h3>${{s.teams.A}}</h3><div class='score'>${{s.scores.A}}</div>
-                        <div style="margin-top:10px; font-size:12px; color:${{aSub?'#0f0':'#f00'}}">${{aSub ? '[PACKET RECEIVED]' : 'WAITING ON NODE...'}}</div>
                     </div>
-                    <div id='timer-cont' style='flex:1'><div class='timer' id='clock'>60</div></div>
-                    <div class='card ${{bSub ? 'submitted' : 'waiting'}}' style='flex:1; border-color:${{s.winner_this_round=='B'?'#0f0':''}}'>
+                    <div id='timer-cont' style='flex:1'><div class='timer' id='clock'>02:30</div></div>
+                    <div class='card ${{bSub ? 'submitted' : 'waiting'}}' style='flex:1;'>
                         <h3>${{s.teams.B}}</h3><div class='score'>${{s.scores.B}}</div>
-                        <div style="margin-top:10px; font-size:12px; color:${{bSub?'#0f0':'#f00'}}">${{bSub ? '[PACKET RECEIVED]' : 'WAITING ON NODE...'}}</div>
                     </div>
                 </div>
                 <div class='card'><h3>ROUND ${{s.q_index+1}}</h3><h1>${{questions[s.q_index].q}}</h1></div>
-                <div style='display:flex; gap:10px;'>
-                    <button onclick="startTimer()">🎤 BROADCAST & TIMER</button>
-                    <button onclick="act('get_verdict')" ${{(!bothSub || s.processing) ? 'disabled' : ''}}>
-                        ${{s.processing ? 'ANALYZING...' : '🏆 AI VERDICT'}}
-                    </button>
-                </div>
-                <div class='caption-box'>${{s.caption}}</div>`;
-                
+                <button onclick="startTimer()">🎤 BROADCAST & TIMER</button>
+                <button onclick="act('get_verdict')" ${{(!bothSub || s.processing) ? 'disabled' : ''}}>
+                    ${{s.processing ? 'ANALYZING...' : '🏆 AI VERDICT'}}
+                </button>`;
+
                 if(s.current_verdict) {{
-                    ui.innerHTML += `<div style='display:flex; gap:10px;'>
-                        <div class='card' style='flex:1'><h4>${{s.teams.A}} ARGUMENT:</h4><div class='ans-box'>${{s.team_answers.A}}</div></div>
-                        <div class='card' style='flex:1'><h4>${{s.teams.B}} ARGUMENT:</h4><div class='ans-box'>${{s.team_answers.B}}</div></div>
-                    </div>
-                    <div class='card' style='text-align:left; color:#fff; border-color:white; font-size:18px;'>${{s.current_verdict}}</div>
-                    <button onclick="act('next')">NEXT ROUND ➡️</button>`;
+                    ui.innerHTML += `
+                        <div class='card verdict-text' style='color:#fff; opacity:0;'>${{s.current_verdict}}</div>
+                        <button onclick="act('next')">NEXT</button>`;
                 }}
-            }} else if(s.phase == 'FINALE') {{
-                ui.innerHTML = `<h1>SYSTEM OVERRIDE COMPLETE</h1><div id='summary' class='card' style='text-align:left; color:#fff; white-space: pre-wrap;'></div><button onclick="act('finale')" ${{s.processing ? 'disabled' : ''}}>${{s.processing ? 'GENERATING LOG...' : '🎤 GENERATE FINAL LOG'}}</button>`;
-                if(s.current_verdict) document.getElementById('summary').innerText = s.current_verdict;
             }}
         }});
 
+        function act(a, t=null) {{
+            socket.emit('host_action', {{action:a, team:t}});
+        }}
+        
         function startTimer() {{
             act('broadcast_q');
-            let t = 60; document.getElementById('clock').innerText = t;
+            let t = 150;
             clearInterval(timerInt);
-            timerInt = setInterval(() => {{ t--; document.getElementById('clock').innerText = t; if(t<=0) clearInterval(timerInt); }}, 1000);
+            timerInt = setInterval(() => {{
+                t--;
+                let m = Math.floor(t / 60).toString().padStart(2, '0');
+                let s = (t % 60).toString().padStart(2, '0');
+                let el = document.getElementById('clock');
+                if(el) el.innerText = `${{m}}:${{s}}`;
+                if(t <= 0) clearInterval(timerInt);
+            }}, 1000);
         }}
-
-        socket.on('play_audio', (d) => {{ new Audio("data:audio/mp3;base64," + d.audio).play(); }});
-        function act(a, t=null) {{ socket.emit('host_action', {{action:a, team:t}}); }}
     </script>
-</body></html>
+</body>
+</html>
 """
+
 
 PORTAL_HTML = f"""
 <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">{CSS}
@@ -293,49 +350,75 @@ def handle_host(data):
         
     elif action == 'boot':
         state['phase'] = 'REGISTRATION'
-        # Just update the UI without speaking yet
         state['caption'] = "Awaiting Node connections..."
         
     elif action == 'start': 
         state['phase'] = 'PLAY'
-        speak("Hello, friend. We are about to begin. Five predictions. Five ethics. You have 60 seconds to prove your worth.", "Hello, friend. We are about to begin...")
+        # Spawning speech async so it doesn't delay the screen update
+        gevent.spawn(speak, "Hello, friend. We are about to begin. You have 2 and a half minutes to prove your worth.", "Hello, friend. We are about to begin...")
         
     elif action == 'broadcast_q': 
         state['winner_this_round'] = ""
-        speak(questions[state['q_index']]['script'], questions[state['q_index']]['q'])
+        gevent.spawn(speak, questions[state['q_index']]['script'], questions[state['q_index']]['q'])
         
     elif action == 'get_verdict':
-        # Lock out double-clicks
         if state.get('processing'): return
         
         state['processing'] = True
-        state['caption'] = "AI is analyzing argument packets..."
+        state['caption'] = "AI is weight-testing logic packets..."
         emit('state_update', state, broadcast=True)
         
-        prompt = (f"Act as Mr. Robot. Analyze this. Q: {questions[state['q_index']]['q']}. "
-                  f"{state['teams']['A']} argued: {state['team_answers']['A']}. "
-                  f"{state['teams']['B']} argued: {state['team_answers']['B']}. "
-                  f"1. Compare logic. 2. Explain reasoning. 3. End ONLY with 'Point goes to {state['teams']['A']}' or 'Point goes to {state['teams']['B']}'.")
+        # Stricter prompt to force actual comparison
+        prompt = (
+            f"Act as Mr. Robot. You are a cold, analytical judge. "
+            f"Question: {questions[state['q_index']]['q']}\n"
+            f"Node {state['teams']['A']}: {state['team_answers']['A']}\n"
+            f"Node {state['teams']['B']}: {state['team_answers']['B']}\n\n"
+            f"TASK: Compare both arguments. Identify which logic is superior or more 'human.' "
+            f"Keep your response under 800 characters. Use <strong>TITLE</strong> and <br> tags. "
+            f"You MUST conclude by choosing a winner. The final characters of your response MUST be exactly: "
+            f"RESULT: {state['teams']['A']} WINS THE NODE. or RESULT: {state['teams']['B']} WINS THE NODE."
+        )
         
         try:
-            res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}]).choices[0].message.content
-            state['current_verdict'] = res
-            speak(res, "Verdict analysis complete.")
+            res = client.chat.completions.create(
+                model="gpt-4o", 
+                messages=[{"role": "system", "content": "You are a cyber-security judge. You compare two arguments and pick a winner based on logic and conviction."},
+                          {"role": "user", "content": prompt}]
+            ).choices[0].message.content
             
-            if state['teams']['A'] in res: 
+            state['current_verdict'] = res
+
+            # SCORING LOGIC: We search for the bracketed team name in the result string
+            if f"RESULT: [{state['teams']['A']}]" in res:
                 state['scores']['A'] += 1
                 state['winner_this_round'] = 'A'
-            elif state['teams']['B'] in res: 
+            elif f"RESULT: [{state['teams']['B']}]" in res:
                 state['scores']['B'] += 1
                 state['winner_this_round'] = 'B'
-                
-            state['history'].append({"q": questions[state['q_index']]['q'], "a": state['team_answers']['A'], "b": state['team_answers']['B'], "winner": state['winner_this_round']})
+            else:
+                # Fallback in case AI forgets the brackets
+                if state['teams']['A'].upper() in res.upper().split("RESULT:")[-1]:
+                    state['scores']['A'] += 1
+                    state['winner_this_round'] = 'A'
+                elif state['teams']['B'].upper() in res.upper().split("RESULT:")[-1]:
+                    state['scores']['B'] += 1
+                    state['winner_this_round'] = 'B'
+            
+            state['history'].append({"q": questions[state['q_index']]['q'], "winner": state['winner_this_round']})
+            
+            emit('state_update', state, broadcast=True)
+            gevent.spawn(speak, res, "Comparison complete. Winner identified.")
+            
         finally:
-            # Always unlock the button afterward
             state['processing'] = False
+
+    elif action == 'intro_sequence':
+        intro_text = "Welcome to the system. Nodes initialized. Prepare for data extraction. Let the games begin."
+        gevent.spawn(speak, intro_text, "INITIALIZING FSOCIETY PROTOCOL...")
             
     elif action == 'next':
-        if state['q_index'] < 9:
+        if state['q_index'] < (len(questions) - 1):
             state['q_index'] += 1
             state['team_answers'] = {"A": "", "B": ""}; state['current_verdict'] = ""; state['winner_this_round'] = ""
             state['caption'] = ""
@@ -348,12 +431,18 @@ def handle_host(data):
         emit('state_update', state, broadcast=True)
         
         win_name = state['teams']['A'] if state['scores']['A'] > state['scores']['B'] else state['teams']['B']
-        summary_prompt = f"Act as Mr. Robot. Summarize this game history: {state['history']}. Declare {win_name} victor."
+        summary_prompt = f"Act as Mr. Robot. Summarize this game history: {state['history']}. Format with HTML <br><br> tags. Declare {win_name} victor."
         
         try:
             summary = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": summary_prompt}]).choices[0].message.content
             state['current_verdict'] = summary
-            speak(summary, f"System Override Complete. Winner: {win_name}")
+
+            # FIRST: push summary to screen
+            emit('state_update', state, broadcast=True)
+
+            # THEN: speak after it's visible
+            gevent.spawn(speak, summary, f"System Override Complete. Winner: {win_name}")
+
         finally:
             state['processing'] = False
             
