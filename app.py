@@ -116,6 +116,13 @@ CSS = """
     /* Styling for AI verdict HTML */
     .verdict-text strong { color: #ff0000; font-size: 1.1em; }
     .verdict-text span { transition: all 0.15s ease; }
+    .verdict-text {
+    font-size: 1.4rem; /* Slightly smaller to fit 250 chars comfortably */
+    line-height: 1.4;
+    max-width: 80%;
+    margin: 0 auto;
+    padding: 20px;
+}
 </style>
 """
 
@@ -168,19 +175,16 @@ TV_HTML = f"""
             if (audioPlayer.paused) {{ audioPlayer.play().catch(e => {{}}); }}
         }}
 
-        // 🔥 FIX: SYNC TEXT HANDLER
-        // This ensures the AI verdict text is visible and formatted
         socket.on('sync_text', (data) => {{
             const container = document.querySelector('.verdict-text');
             if (container) {{
-                container.innerHTML = data.text; // Allows <strong> and <br> tags
+                container.innerHTML = data.text;
                 container.style.opacity = 1;
             }}
         }});
 
         socket.on('state_update', (s) => {{
             let ui = document.getElementById('display');
-            // Flash colors based on winner
             document.body.className = s.winner_this_round == 'A' ? 'flash-win' : (s.winner_this_round == 'B' ? 'flash-lose' : '');
 
             if(s.phase == 'INTRO') {{
@@ -224,6 +228,23 @@ TV_HTML = f"""
                         <button onclick="act('next')">NEXT</button>`;
                 }}
             }}
+            /* =========================================
+               🔥 NEW: FINALE PHASE HANDLER
+               ========================================= */
+            else if(s.phase == 'FINALE') {{
+                ui.innerHTML = `
+                    <h1 style='font-size:60px; color:#0f0;'>SYSTEM OVERRIDE COMPLETE</h1>
+                    <div class='card'>
+                        <div id='summary' class='verdict-text' style='color:#fff; font-size:1.2rem;'>
+                            ${{s.current_verdict ? s.current_verdict : 'PREPARING FINAL LOG... Wait for it.'}}
+                        </div>
+                    </div>
+                    ${{!s.current_verdict ? 
+                        `<button onclick="act('finale')" style="border-color:#0f0; color:#0f0;">GENERATE FINAL LOG</button>` : 
+                        `<button onclick="act('hard_reset')">REBOOT SYSTEM</button>`
+                    }}
+                `;
+            }}
         }});
 
         function act(a, t=null) {{
@@ -247,7 +268,6 @@ TV_HTML = f"""
 </body>
 </html>
 """
-
 
 PORTAL_HTML = f"""
 <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">{CSS}
@@ -405,8 +425,14 @@ def handle_host(data):
                     state['scores']['B'] += 1
                     state['winner_this_round'] = 'B'
             
-            state['history'].append({"q": questions[state['q_index']]['q'], "winner": state['winner_this_round']})
+            #state['history'].append({"q": questions[state['q_index']]['q'], "winner": state['winner_this_round']})
             
+            # Inside 'get_verdict' after determining the winner:
+            state['history'].append({
+            "q": questions[state['q_index']]['q'], 
+            "winner": state['teams']['A'] if state['winner_this_round'] == 'A' else state['teams']['B']
+            })
+
             emit('state_update', state, broadcast=True)
             gevent.spawn(speak, res, "Comparison complete. Winner identified.")
             
@@ -418,33 +444,62 @@ def handle_host(data):
         gevent.spawn(speak, intro_text, "INITIALIZING FSOCIETY PROTOCOL...")
             
     elif action == 'next':
-        if state['q_index'] < (len(questions) - 1):
+        # len(questions) is 5. Last index is 4.
+        # If we are at index 4, we move to FINALE.
+        if state['q_index'] >= (len(questions) - 1):
+            state['phase'] = 'FINALE'
+            state['current_verdict'] = "" # Clear previous round's text
+            state['winner_this_round'] = ""
+            state['caption'] = "SYSTEM OVERRIDE COMPLETE. FINALIZING LOGS..."
+        else:
+            # Move to the next question and reset round-specific data
             state['q_index'] += 1
-            state['team_answers'] = {"A": "", "B": ""}; state['current_verdict'] = ""; state['winner_this_round'] = ""
-            state['caption'] = ""
-        else: state['phase'] = 'FINALE'
+            state['team_answers'] = {"A": "", "B": ""}
+            state['current_verdict'] = ""
+            state['winner_this_round'] = ""
+            state['caption'] = f"Awaiting data for Round {state['q_index'] + 1}..."
         
+        # Broadcast the change so the TV and Portals update
+        emit('state_update', state, broadcast=True)
+
     elif action == 'finale':
         if state.get('processing'): return
         
         state['processing'] = True
         emit('state_update', state, broadcast=True)
         
-        win_name = state['teams']['A'] if state['scores']['A'] > state['scores']['B'] else state['teams']['B']
-        summary_prompt = f"Act as Mr. Robot. Summarize this game history: {state['history']}. Format with HTML <br><br> tags. Declare {win_name} victor."
+        # Determine the absolute winner
+        if state['scores']['A'] > state['scores']['B']:
+            win_name = state['teams']['A']
+        elif state['scores']['B'] > state['scores']['A']:
+            win_name = state['teams']['B']
+        else:
+            win_name = "STALEMATE - BOTH NODES"
+
+        # Create a summary prompt that includes the history of who won which round
+        history_str = ", ".join([f"Round {i+1}: {h['winner']}" for i, h in enumerate(state['history'])])
+        
+        summary_prompt = (
+            f"Act as Mr. Robot. Summarize this game. History: {history_str}. "
+            f"The final score is {state['teams']['A']}: {state['scores']['A']} vs "
+            f"{state['teams']['B']}: {state['scores']['B']}. "
+            f"Be cold and concise. Use <strong> and <br> tags. "
+            f"End by declaring {win_name} the ultimate victor of the system."
+        )
         
         try:
-            summary = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": summary_prompt}]).choices[0].message.content
+            summary = client.chat.completions.create(
+                model="gpt-4o", 
+                messages=[{"role": "user", "content": summary_prompt}]
+            ).choices[0].message.content
+            
             state['current_verdict'] = summary
-
-            # FIRST: push summary to screen
             emit('state_update', state, broadcast=True)
-
-            # THEN: speak after it's visible
-            gevent.spawn(speak, summary, f"System Override Complete. Winner: {win_name}")
+            gevent.spawn(speak, summary, "Final system log generated.")
 
         finally:
             state['processing'] = False
+            emit('state_update', state, broadcast=True)
             
     emit('state_update', state, broadcast=True)
 
