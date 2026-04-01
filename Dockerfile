@@ -1,26 +1,29 @@
-# Using 3.12-slim for a balance of modern features and rock-solid stability
+# 1. Use 3.12-slim as requested
 FROM python:3.12-slim
 
-# Set environment variables to prevent Python from writing pyc files and buffering stdout
+# 2. Prevent Python from buffering and writing .pyc files
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system dependencies needed for gevent/greenlet build if necessary
+# 3. Install build tools needed for gevent/greenlet
+# These are essential because gevent compiles C extensions.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# 4. Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the app
+# 5. Copy the rest of the application
 COPY . .
 
+# 6. Expose the port
 EXPOSE 5001
 
-# The Gevent WebSocket worker is the key to handling the TV and Phone connections simultaneously
-CMD ["python" "app.py"]
+# 7. THE FIX: Corrected CMD syntax
+# CMD requires commas between arguments in exec form
+CMD ["python", "app.py"]
