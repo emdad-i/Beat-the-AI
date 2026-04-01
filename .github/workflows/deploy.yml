@@ -1,4 +1,27 @@
-- name: Deploy via SSH
+name: Deploy to Linux Server
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Copy files via SSH
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ vars.SERVER_IP }}
+          username: ${{ vars.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ vars.SSH_PORT }}
+          source: "."
+          target: "/home/${{ vars.SERVER_USER }}/beat-the-ai"
+
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ vars.SERVER_IP }}
@@ -7,21 +30,14 @@
           port: ${{ vars.SSH_PORT }}
           script: |
             cd /home/${{ vars.SERVER_USER }}/beat-the-ai
-            
-            # Stop and remove existing container
+            loginctl enable-linger ${{ vars.SERVER_USER }}
             podman stop beat-the-ai || true
             podman rm -f beat-the-ai || true
-
-            # Build the image
             podman build -t beat-the-ai .
-
-            # Run with explicit Host IP binding (optional but safer)
             podman run -d \
               --name beat-the-ai \
               -p 5001:5001 \
               --restart always \
               -e OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
               beat-the-ai
-
-            # Cleanup old unused images to save disk space
             podman image prune -f
