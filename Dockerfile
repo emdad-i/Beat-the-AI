@@ -23,4 +23,4 @@ COPY . .
 EXPOSE 5001
 
 # The Gevent WebSocket worker is the key to handling the TV and Phone connections simultaneously
-CMD ["gunicorn", "-k", "geventwebsocket.gunicorn.workers.GeventWebSocketWorker", "-w", "1", "--bind", "0.0.0.0:5001", "app:app"]
+CMD ["python" "app.py"]
