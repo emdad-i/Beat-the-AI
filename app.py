@@ -64,7 +64,7 @@ def speak(text, caption=None):
             socketio.emit("state_update", state)
 
         clean_text = re.sub(r"<[^>]+>", "", text)
-        socketio.emit("sync_text", {"text": clean_text})
+        socketio.emit("sync_text", {"text": text})
 
         max_attempts = 3
         backoff = 1

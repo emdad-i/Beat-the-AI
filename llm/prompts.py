@@ -18,7 +18,11 @@ def build_get_verdict_prompt(state, question_item):
         f"Node {state['teams']['A']}: {state['team_answers']['A']}\n"
         f"Node {state['teams']['B']}: {state['team_answers']['B']}\n\n"
         f"TASK: Compare both arguments. Identify which logic is superior or more 'human.' "
-        f"Keep your response under 800 characters. Use <strong>TITLE</strong> and <br> tags. "
+        f"Keep your response under 800 characters and use exactly this HTML structure, in this order: "
+        f"<strong>{state['teams']['A']} REASONING</strong><br>brief analysis of Node A<br><br>"
+        f"<strong>{state['teams']['B']} REASONING</strong><br>brief analysis of Node B<br><br>"
+        f"<strong>AI VERDICT</strong><br>brief comparison and decision<br>"
+        f"<strong>POINT AWARDED: {state['teams']['A']} or {state['teams']['B']}</strong><br>"
         f"You MUST conclude by choosing a winner. The final characters of your response MUST be exactly: "
         f"RESULT: {state['teams']['A']} WINS THE NODE. or RESULT: {state['teams']['B']} WINS THE NODE."
     )

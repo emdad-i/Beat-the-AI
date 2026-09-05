@@ -48,10 +48,26 @@ function processQueue() {
 socket.on('sync_text', (data) => {
     const container = document.querySelector('.verdict-text');
     if (container) {
-        container.innerHTML = data.text;
+        container.innerHTML = formatVerdict(data.text);
         container.style.opacity = 1;
     }
 });
+
+function formatVerdict(text) {
+    const decoder = document.createElement('textarea');
+    decoder.innerHTML = text;
+    let formatted = decoder.value.trim();
+
+    formatted = formatted
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/<br\s*\/?\s*>/gi, '<br>');
+
+    if (!/<\/?(strong|br)\b/i.test(formatted)) {
+        formatted = formatted.replace(/\r?\n/g, '<br>');
+    }
+
+    return formatted;
+}
 
 socket.on('state_update', (state) => {
     const display = document.getElementById('display');
@@ -90,7 +106,7 @@ socket.on('state_update', (state) => {
 
         if (state.current_verdict) {
             display.innerHTML += `
-                <div class="card verdict-text" style="color:#fff; opacity:0;">${state.current_verdict}</div>
+                <div class="card verdict-text" style="color:#fff; opacity:0;">${formatVerdict(state.current_verdict)}</div>
                 <button onclick="act('next')">NEXT</button>`;
         }
     } else if (state.phase === 'FINALE') {
@@ -98,7 +114,7 @@ socket.on('state_update', (state) => {
             <h1 style="font-size:60px; color:#0f0;">SYSTEM OVERRIDE COMPLETE</h1>
             <div class="card">
                 <div id="summary" class="verdict-text" style="color:#fff; font-size:1.2rem;">
-                    ${state.current_verdict ? state.current_verdict : 'PREPARING FINAL LOG... Wait for it.'}
+                    ${state.current_verdict ? formatVerdict(state.current_verdict) : 'PREPARING FINAL LOG... Wait for it.'}
                 </div>
             </div>
             ${!state.current_verdict
