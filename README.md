@@ -1,7 +1,7 @@
 # 🎭 FSOCIETY: BEAT THE AI
 ### A Mr. Robot Inspired Debate Workshop & Game
 
-This is a Flask-based interactive game where two teams ("Nodes") compete in a battle of logic and ethics judged by GPT-4o. The system features a TV Broadcast interface with real-time audio, a 60-second pressure timer, and a mobile portal for player submissions.
+This is a Flask-based interactive game where two teams ("Nodes") compete in a battle of logic and ethics judged by `gpt-5.6-luna`. The system features a TV Broadcast interface with real-time audio, a time pressure, and a mobile portal for player submissions.
 
 ---
 
@@ -62,6 +62,15 @@ Open `http://localhost:5001/tv` on the display and `http://YOUR_LOCAL_IP:5001` o
 * **SYSTEM RESET:** Hover top-right corner on TV to reveal the hidden reset button.
 
 ---
+
+## 🤖 AI Models
+
+The current model configuration is:
+
+* **Chat and verdicts:** `gpt-5.6-luna`
+* **Text-to-speech:** `gpt-4o-mini-tts`
+
+These defaults are defined in `llm/config.py`.
 
 ## 📦 Dependencies
 
