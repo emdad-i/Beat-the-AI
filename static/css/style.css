@@ -90,6 +90,13 @@ textarea {
     font-family: inherit;
 }
 
+.answer-counter {
+    color: #aaa;
+    font-size: 0.85rem;
+    margin-top: 6px;
+    text-align: right;
+}
+
 .score {
     font-size: 70px;
     color: #fff;

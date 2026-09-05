@@ -54,6 +54,7 @@ def get_initial_state():
 
 state = get_initial_state()
 questions = QUESTIONS
+MAX_ANSWER_CHARS = 800
 
 
 def speak(text, caption=None):
@@ -245,7 +246,7 @@ def handle_player(data):
         state["teams"][data["team"]] = data["alias"]
         state["registered"][data["team"]] = True
     elif data["action"] == "ans":
-        state["team_answers"][data["team"]] = data["ans"]
+        state["team_answers"][data["team"]] = data["ans"][:MAX_ANSWER_CHARS]
     emit("state_update", state, broadcast=True)
 
 

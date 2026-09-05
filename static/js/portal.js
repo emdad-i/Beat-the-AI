@@ -2,6 +2,7 @@ const socket = io({ transports: ['websocket'], upgrade: false });
 let myTeam = null;
 let currentQuestion = -1;
 const questions = window.QUESTIONS;
+const MAX_ANSWER_CHARS = 800;
 
 socket.on('disconnect', () => {
     console.log('Lost connection to fsociety server...');
@@ -42,8 +43,14 @@ socket.on('state_update', (state) => {
             view.innerHTML = `
                 <h3>ROUND ${state.q_index + 1}</h3>
                 <div class="card" style="color:#fff; font-size:14px;">Q: ${questions[state.q_index].q}</div>
-                <textarea id="ans" placeholder="Type your argument here..."></textarea>
+                <textarea id="ans" maxlength="${MAX_ANSWER_CHARS}" placeholder="Type your argument here..."></textarea>
+                <div id="answer-counter" class="answer-counter">0/${MAX_ANSWER_CHARS}</div>
                 <button onclick="send()">UPLOAD DATA</button>`;
+            const answerInput = document.getElementById('ans');
+            const answerCounter = document.getElementById('answer-counter');
+            answerInput.addEventListener('input', () => {
+                answerCounter.textContent = `${answerInput.value.length}/${MAX_ANSWER_CHARS}`;
+            });
         }
         if (state.team_answers[myTeam]) {
             view.innerHTML = '<h3 style="color:#0f0;">PACKET SENT.</h3><p>AWAITING AI VERDICT...</p>';
