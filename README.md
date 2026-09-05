@@ -7,27 +7,28 @@ This is a Flask-based interactive game where two teams ("Nodes") compete in a ba
 
 ## 🛠️ Prerequisites
 
-* **Python 3.8+** installed.  
-* **OpenAI API Key** with access to GPT-4o and TTS-1.  
+* **uv** installed (`brew install uv` on macOS).
+* **OpenAI API Key** with access to the configured chat and TTS models.
 * All devices (Laptop and Phones) must be on the **same Wi-Fi network**.
 
 ---
 
-## 🚀 Installation & Setup
+## 🚀 Developer Quick Start
 
-### 1. Navigate to Project Folder  
+### 1. Clone and enter the project
 ```bash
+git clone https://github.com/emdad-i/Beat-the-AI.git
 cd Beat-the-AI
 ```
 
-### 2. Install Dependencies  
+### 2. Create the uv environment
 ```bash
 uv sync
 ```
 
-### 3. Set Environment Variable  
+### 3. Set the API key for this terminal
 ```bash
-export OPENAI_API_KEY='sk-proj-your-actual-key-here'
+export OPENAI_API_KEY='your-api-key'
 ```
 
 Windows PowerShell:  
@@ -43,6 +44,8 @@ $env:OPENAI_API_KEY="your-key-here"
 ```bash
 uv run python app.py
 ```
+
+Open `http://localhost:5001/tv` on the display and `http://YOUR_LOCAL_IP:5001` on player devices. Keep the API key out of source control.
 
 ### 2. Open the Interfaces  
 * TV Screen (Projector): http:localhost:5001/tv  
@@ -62,20 +65,12 @@ uv run python app.py
 
 ## 📦 Dependencies
 
-* Flask & Flask-SocketIO  
-* OpenAI (GPT-4o & Onyx TTS)  
-* Eventlet  
+Dependencies are managed in `pyproject.toml` and pinned in `uv.lock`.
 
 ---
 
 ## 📦 requirements.txt  
-```text
-flask
-flask-socketio
-openai
-eventlet
-python-dotenv
-```
+Dependencies are declared in `pyproject.toml` and locked in `uv.lock`.
 
 ## 🗂️ Project Structure
 
@@ -91,7 +86,7 @@ This makes it easier to update prompts or swap models without changing `app.py`.
 You can check which known TTS models your OpenAI account can access:
 
 ```bash
-python scripts/check_tts_models.py
+uv run python scripts/check_tts_models.py
 ```
 
 If streaming still fails, try `tts-1-hd` or one of the `gpt-4o-mini-tts` variants if they appear in the list.
