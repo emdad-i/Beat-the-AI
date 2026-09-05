@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Project-local "uv run" wrapper: activates .venv then runs the provided command.
+# Usage: ./scripts/uv-run python app.py
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV="$ROOT_DIR/.venv"
+
+if [ ! -d "$VENV" ]; then
+  echo "Virtualenv not found at $VENV"
+  echo "Create it with: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+  exit 1
+fi
+
+# Allow leading KEY=VALUE env assignments before the command, e.g.
+# ./scripts/uv-run PYTHONPATH=. OPENAI_DEBUG=1 python app.py
+ENV_ASSIGNMENTS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    *=*) ENV_ASSIGNMENTS+=("$1") ; shift ;;
+    *) break ;;
+  esac
+done
+
+if [ "${#ENV_ASSIGNMENTS[@]}" -gt 0 ]; then
+  for e in "${ENV_ASSIGNMENTS[@]}"; do
+    export "$e"
+  done
+fi
+
+# Note: do not deactivate conda; assume caller manages their environment
+
+# Activate the venv in this shell and exec the command
+# shellcheck disable=SC1090
+source "$VENV/bin/activate"
+
+# Preserve current OPENAI_API_KEY and OPENAI_DEBUG if set
+export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+export OPENAI_DEBUG="${OPENAI_DEBUG:-}"
+
+if [ "$#" -eq 0 ]; then
+  echo "No command provided. Usage: ./scripts/uv-run [KEY=VAL ...] command [args...]"
+  exit 2
+fi
+
+# Run the requested command
+exec "$@"

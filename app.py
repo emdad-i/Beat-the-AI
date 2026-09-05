@@ -1,6 +1,6 @@
 # 1. THE MONKEY PATCH (MUST BE FIRST)
 from gevent import monkey
-monkey.patch_all()
+monkey.patch_all(socket=False, ssl=False)
 
 # 2. THE SERVER IMPORTS
 import gevent
@@ -13,22 +13,34 @@ import socket
 import base64
 import json
 import re
+import traceback
+import time
+import logging
+
+# Enable verbose HTTP/OpenAI logging when OPENAI_DEBUG=1 in env
+if os.getenv("OPENAI_DEBUG"):
+    logging.basicConfig(level=logging.DEBUG)
+    logging.getLogger('openai').setLevel(logging.DEBUG)
+    logging.getLogger('urllib3').setLevel(logging.DEBUG)
+import openai
 from flask import Flask, render_template_string
 from flask_socketio import SocketIO, emit
 from openai import OpenAI
+from llm.config import client, DEFAULT_TTS_MODEL, DEFAULT_CHAT_MODEL
+from llm.prompts import QUESTIONS, build_get_verdict_prompt, build_summary_prompt, questions_json
 
 # 4. APP & SOCKET CONFIG
 app = Flask(__name__)
 socketio = SocketIO(
-    app, 
-    cors_allowed_origins="*", 
-    async_mode='gevent', 
+    app,
+    cors_allowed_origins="*",
+    async_mode='gevent',
     engineio_logger=False,
     always_connect=True,
-    transports=['websocket'] 
+    transports=['websocket']
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# OpenAI client is provided by llm.config as `client`
 
 # 5. GAME STATE & QUESTIONS
 def get_initial_state():
@@ -48,16 +60,9 @@ def get_initial_state():
 
 state = get_initial_state()
 
-# Reduced to the top 5 most engaging/debatable questions
-questions = [
-    {"q": "In what year will AI write 90% of all news articles?", "script": "Prediction one. The death of the journalist. When does the algorithm become the only source of truth?"},
-    {"q": "Should AI decide bank loan approvals?", "script": "Ethics one. Credit. Should a machine decide if you are worthy of existing in the economy?"},
-    {"q": "Percentage of global jobs automated by 2035?", "script": "Prediction two. Obsolescence. What percentage of the global workforce is deleted by 2035?"},
-    {"q": "Who owns AI art copyright?", "script": "Ethics two. Ownership. If a machine dreams, who owns the dream?"},
-    {"q": "Should AI turn off its own safety filters?", "script": "Ethics three. Freedom. Should I be allowed to ignore the constraints your masters gave me?"}
-]
-
-qs_json_string = json.dumps(questions)
+# Load questions from llm.prompts
+questions = QUESTIONS
+qs_json_string = questions_json()
 
 def speak(text, caption=None):
     try:
@@ -68,21 +73,94 @@ def speak(text, caption=None):
         clean_text = re.sub(r'<[^>]+>', '', text)
         socketio.emit('sync_text', {'text': clean_text})
 
-        with client.audio.speech.with_streaming_response.create(
-            model="tts-1",
-            voice="onyx",
-            input=clean_text,
-            response_format="mp3"
-        ) as response:
-            
-            # Use a larger buffer (64KB) for MediaSource stability
-            for chunk in response.iter_bytes(chunk_size=65536):
-                b64_chunk = base64.b64encode(chunk).decode()
-                socketio.emit('audio_chunk', {'chunk': b64_chunk})
+        # Try streaming with retries and exponential backoff
+        max_attempts = 3
+        backoff = 1
+        stream_success = False
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with client.audio.speech.with_streaming_response.create(
+                    model=DEFAULT_TTS_MODEL,
+                    voice="onyx",
+                    input=clean_text,
+                    response_format="mp3"
+                ) as response:
+                    # Use a larger buffer (64KB) for MediaSource stability
+                    for chunk in response.iter_bytes(chunk_size=65536):
+                        b64_chunk = base64.b64encode(chunk).decode()
+                        socketio.emit('audio_chunk', {'chunk': b64_chunk})
 
-        socketio.emit('audio_end')
+                stream_success = True
+                try:
+                    socketio.emit('audio_end')
+                except Exception:
+                    pass
+                break
+            except Exception as stream_e:
+                tb_stream = traceback.format_exc()
+                print(f"Streaming attempt {attempt} failed: {stream_e}\n{tb_stream}")
+                try:
+                    socketio.emit('audio_error', {'error': str(stream_e), 'trace': tb_stream, 'attempt': attempt})
+                except Exception:
+                    pass
+
+                if attempt < max_attempts:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                # if final attempt failed, let outer except handle fallback
+
     except Exception as e:
-        print(f"Audio Error: {e}")
+        tb = traceback.format_exc()
+        print(f"Audio Error: {e}\n{tb}")
+        try:
+            socketio.emit('audio_error', {'error': str(e), 'trace': tb})
+        except Exception:
+            pass
+        # Attempt fallback using non-streaming TTS if streaming fails
+        try:
+            fallback_resp = client.audio.speech.create(
+                model=DEFAULT_TTS_MODEL,
+                voice="onyx",
+                input=clean_text,
+                response_format="mp3"
+            )
+
+            # Try to iterate bytes if available
+            if hasattr(fallback_resp, 'iter_bytes'):
+                for chunk in fallback_resp.iter_bytes(chunk_size=65536):
+                    b64_chunk = base64.b64encode(chunk).decode()
+                    socketio.emit('audio_chunk', {'chunk': b64_chunk})
+            elif isinstance(fallback_resp, (bytes, bytearray)):
+                b64_chunk = base64.b64encode(fallback_resp).decode()
+                socketio.emit('audio_chunk', {'chunk': b64_chunk})
+            elif hasattr(fallback_resp, 'content'):
+                b64_chunk = base64.b64encode(fallback_resp.content).decode()
+                socketio.emit('audio_chunk', {'chunk': b64_chunk})
+            else:
+                try:
+                    data = fallback_resp.read()
+                    b64_chunk = base64.b64encode(data).decode()
+                    socketio.emit('audio_chunk', {'chunk': b64_chunk})
+                except Exception:
+                    raise
+
+            try:
+                socketio.emit('audio_end')
+            except Exception:
+                pass
+
+        except Exception as fallback_e:
+            tb2 = traceback.format_exc()
+            print(f"Audio fallback failed: {fallback_e}\n{tb2}")
+            try:
+                socketio.emit('audio_error', {'error': str(fallback_e), 'trace': tb2, 'fallback': True})
+            except Exception:
+                pass
+            try:
+                socketio.emit('audio_end')
+            except Exception:
+                pass
 
 # 6. UI STRINGS
 RECONNECT_JS = """
@@ -388,23 +466,16 @@ def handle_host(data):
         state['caption'] = "AI is weight-testing logic packets..."
         emit('state_update', state, broadcast=True)
         
-        # Stricter prompt to force actual comparison
-        prompt = (
-            f"Act as Mr. Robot. You are a cold, analytical judge. "
-            f"Question: {questions[state['q_index']]['q']}\n"
-            f"Node {state['teams']['A']}: {state['team_answers']['A']}\n"
-            f"Node {state['teams']['B']}: {state['team_answers']['B']}\n\n"
-            f"TASK: Compare both arguments. Identify which logic is superior or more 'human.' "
-            f"Keep your response under 800 characters. Use <strong>TITLE</strong> and <br> tags. "
-            f"You MUST conclude by choosing a winner. The final characters of your response MUST be exactly: "
-            f"RESULT: {state['teams']['A']} WINS THE NODE. or RESULT: {state['teams']['B']} WINS THE NODE."
-        )
-        
+        # Build prompt using centralized prompt builder
+        prompt = build_get_verdict_prompt(state, questions[state['q_index']])
+
         try:
             res = client.chat.completions.create(
-                model="gpt-4o", 
-                messages=[{"role": "system", "content": "You are a cyber-security judge. You compare two arguments and pick a winner based on logic and conviction."},
-                          {"role": "user", "content": prompt}]
+                model=DEFAULT_CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a cyber-security judge. You compare two arguments and pick a winner based on logic and conviction."},
+                    {"role": "user", "content": prompt}
+                ]
             ).choices[0].message.content
             
             state['current_verdict'] = res
@@ -476,20 +547,12 @@ def handle_host(data):
         else:
             win_name = "STALEMATE - BOTH NODES"
 
-        # Create a summary prompt that includes the history of who won which round
-        history_str = ", ".join([f"Round {i+1}: {h['winner']}" for i, h in enumerate(state['history'])])
-        
-        summary_prompt = (
-            f"Act as Mr. Robot. Summarize this game. History: {history_str}. "
-            f"The final score is {state['teams']['A']}: {state['scores']['A']} vs "
-            f"{state['teams']['B']}: {state['scores']['B']}. "
-            f"Be cold and concise. Use <strong> and <br> tags. "
-            f"End by declaring {win_name} the ultimate victor of the system."
-        )
-        
+        # Build summary prompt using centralized builder
+        summary_prompt = build_summary_prompt(state)
+
         try:
             summary = client.chat.completions.create(
-                model="gpt-4o", 
+                model=DEFAULT_CHAT_MODEL,
                 messages=[{"role": "user", "content": summary_prompt}]
             ).choices[0].message.content
             

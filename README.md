@@ -22,7 +22,7 @@ cd Beat-the-AI
 
 ### 2. Install Dependencies  
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 3. Set Environment Variable  
@@ -41,7 +41,7 @@ $env:OPENAI_API_KEY="your-key-here"
 
 ### 1. Start the Server  
 ```bash
-python app.py
+uv run python app.py
 ```
 
 ### 2. Open the Interfaces  
@@ -76,3 +76,22 @@ openai
 eventlet
 python-dotenv
 ```
+
+## 🗂️ Project Structure
+
+The LLM-related configuration and prompts have been moved into a dedicated package for easier maintenance:
+
+- `llm/config.py`: OpenAI client and model defaults
+- `llm/prompts.py`: Question list and prompt-builder helpers
+
+This makes it easier to update prompts or swap models without changing `app.py`.
+
+### Checking available TTS models
+
+You can check which known TTS models your OpenAI account can access:
+
+```bash
+python scripts/check_tts_models.py
+```
+
+If streaming still fails, try `tts-1-hd` or one of the `gpt-4o-mini-tts` variants if they appear in the list.
