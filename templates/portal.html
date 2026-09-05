@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beat the AI Portal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <div id="setup">
+        <h2>IDENTITY SELECTION</h2>
+        <button onclick="pick('A')">NODE A</button>
+        <button onclick="pick('B')">NODE B</button>
+    </div>
+    <div id="main" style="display:none;">
+        <div id="view"></div>
+    </div>
+    <script>
+        window.QUESTIONS = {{ questions|tojson }};
+    </script>
+    <script src="{{ url_for('static', filename='js/portal.js') }}"></script>
+</body>
+</html>
