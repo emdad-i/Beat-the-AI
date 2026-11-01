@@ -19,13 +19,17 @@ mediaSource.addEventListener('sourceopen', () => {
 });
 
 socket.on('audio_chunk', (data) => {
-    const binary = atob(data.chunk);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
+    try {
+        const binary = atob(data.chunk);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+            bytes[index] = binary.charCodeAt(index);
+        }
+        audioQueue.push(bytes);
+        processQueue();
+    } catch (error) {
+        console.error('Error processing audio chunk:', error);
     }
-    audioQueue.push(bytes);
-    processQueue();
 });
 
 function processQueue() {
@@ -35,13 +39,21 @@ function processQueue() {
 
     isAppending = true;
     try {
-        sourceBuffer.appendBuffer(audioQueue.shift());
+        const chunk = audioQueue.shift();
+        if (chunk && chunk.length > 0) {
+            sourceBuffer.appendBuffer(chunk);
+        } else {
+            isAppending = false;
+        }
     } catch (error) {
+        console.error('Error appending audio buffer:', error);
         isAppending = false;
     }
 
     if (audioPlayer.paused) {
-        audioPlayer.play().catch(() => {});
+        audioPlayer.play().catch((error) => {
+            console.warn('Audio play failed:', error);
+        });
     }
 }
 

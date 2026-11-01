@@ -68,7 +68,7 @@ Open `http://localhost:5001/tv` on the display and `http://YOUR_LOCAL_IP:5001` o
 The current model configuration is:
 
 * **Chat and verdicts:** `gpt-5.6-luna`
-* **Text-to-speech:** `gpt-4o-mini-tts`
+* **Text-to-speech:** `tts-1`
 
 These defaults are defined in `llm/config.py`.
 

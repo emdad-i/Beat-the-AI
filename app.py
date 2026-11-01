@@ -20,6 +20,10 @@ from geventwebsocket.handler import WebSocketHandler
 from llm.config import DEFAULT_CHAT_MODEL, DEFAULT_TTS_MODEL, client
 from llm.prompts import QUESTIONS, build_get_verdict_prompt, build_summary_prompt
 
+# Validate required environment variables
+if not os.getenv("OPENAI_API_KEY"):
+    raise RuntimeError("OPENAI_API_KEY environment variable is required but not set.")
+
 if os.getenv("OPENAI_DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
     logging.getLogger("openai").setLevel(logging.DEBUG)
@@ -70,18 +74,87 @@ def speak(text, caption=None):
         backoff = 1
         for attempt in range(1, max_attempts + 1):
             try:
-                with client.audio.speech.with_streaming_response.create(
+                print(f"Attempt {attempt}: Creating TTS with model {DEFAULT_TTS_MODEL}")
+                
+                # First, try the streaming approach
+                try:
+                    response = client.audio.speech.with_streaming_response.create(
+                        model=DEFAULT_TTS_MODEL,
+                        voice="onyx",
+                        input=clean_text,
+                        response_format="mp3",
+                    )
+                    
+                    print(f"Streaming response received: {response}")
+                    print(f"Response type: {type(response)}")
+                    
+                    chunk_count = 0
+                    print("Starting to stream chunks...")
+                    
+                    # Try to read content in chunks
+                    try:
+                        # For streaming response, we need to handle it properly
+                        # Read and send chunks
+                        chunk_size = 65536
+                        while True:
+                            try:
+                                # Try to read a chunk
+                                chunk = response.read(chunk_size)
+                                if not chunk:
+                                    break
+                                if chunk:  # Filter out keep-alive chunks
+                                    encoded_chunk = base64.b64encode(chunk).decode()
+                                    socketio.emit("audio_chunk", {"chunk": encoded_chunk})
+                                    chunk_count += 1
+                            except Exception as read_error:
+                                print(f"Error reading chunk: {read_error}")
+                                # If we can't read chunks, try to get the whole thing
+                                break
+                                
+                    except Exception as e:
+                        print(f"Streaming read failed: {e}")
+                        # If streaming fails, fall back to the approach that should work
+                        pass
+                        
+                    if chunk_count > 0:
+                        print(f"Streamed {chunk_count} chunks successfully")
+                        socketio.emit("audio_end")
+                        break
+                    else:
+                        # If we couldn't stream, try the non-streaming approach
+                        print("Streaming failed, falling back to non-streaming approach...")
+                        
+                except Exception as streaming_error:
+                    print(f"Streaming approach failed entirely: {streaming_error}")
+                    # Continue to fallback approach
+                
+                # Fall back to the non-streaming approach which should work reliably
+                print("Using fallback non-streaming approach...")
+                fallback_response = client.audio.speech.create(
                     model=DEFAULT_TTS_MODEL,
                     voice="onyx",
                     input=clean_text,
                     response_format="mp3",
-                ) as response:
-                    for chunk in response.iter_bytes(chunk_size=65536):
-                        encoded_chunk = base64.b64encode(chunk).decode()
-                        socketio.emit("audio_chunk", {"chunk": encoded_chunk})
-
+                )
+                print(f"Fallback response received: {fallback_response}")
+                
+                # Access content directly from the non-streaming response
+                content = fallback_response.content
+                if content:
+                    # Send in smaller chunks
+                    chunk_size = 65536
+                    chunk_count = 0
+                    for i in range(0, len(content), chunk_size):
+                        chunk = content[i:i+chunk_size]
+                        if chunk:
+                            encoded_chunk = base64.b64encode(chunk).decode()
+                            socketio.emit("audio_chunk", {"chunk": encoded_chunk})
+                            chunk_count += 1
+                    print(f"Fallback streamed {chunk_count} chunks successfully")
+                
                 socketio.emit("audio_end")
                 break
+                
             except Exception as stream_error:
                 trace = traceback.format_exc()
                 print(f"Streaming attempt {attempt} failed: {stream_error}\n{trace}")
@@ -97,15 +170,24 @@ def speak(text, caption=None):
         print(f"Audio Error: {error}\n{trace}")
         socketio.emit("audio_error", {"error": str(error), "trace": trace})
         try:
+            print(f"Attempting fallback with model {DEFAULT_TTS_MODEL}")
             fallback_response = client.audio.speech.create(
                 model=DEFAULT_TTS_MODEL,
                 voice="onyx",
                 input=clean_text,
                 response_format="mp3",
             )
-            for chunk in fallback_response.iter_bytes(chunk_size=65536):
-                encoded_chunk = base64.b64encode(chunk).decode()
-                socketio.emit("audio_chunk", {"chunk": encoded_chunk})
+            print(f"Fallback response received: {fallback_response}")
+            # For non-streaming response, we can access content directly
+            content = fallback_response.content
+            if content:
+                # Send in smaller chunks
+                chunk_size = 65536
+                for i in range(0, len(content), chunk_size):
+                    chunk = content[i:i+chunk_size]
+                    if chunk:
+                        encoded_chunk = base64.b64encode(chunk).decode()
+                        socketio.emit("audio_chunk", {"chunk": encoded_chunk})
             socketio.emit("audio_end")
         except Exception as fallback_error:
             fallback_trace = traceback.format_exc()

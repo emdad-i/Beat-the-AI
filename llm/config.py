@@ -6,8 +6,9 @@ from openai import OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default models can be configured here for easy maintenance
+# Note: These are examples - verify availability with your OpenAI account
 DEFAULT_CHAT_MODEL = "gpt-5.6-luna"
-DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
+DEFAULT_TTS_MODEL = "tts-1"
 
 # Known TTS-capable model ids to check against the API. Keep this list updated as OpenAI adds/removes models.
 KNOWN_TTS_MODELS = [
